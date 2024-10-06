@@ -99,7 +99,7 @@ int main() {
     printf("---------------\n");
 
     // Prepare and send a simple HTTP response
-    const char *response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 14\r\n\r\nHello, World!\n";
+    const char *response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 14\r\n\r\nSucess!\n";
 
     ssize_t bytes_written = write(new_socket, response, strlen(response));
     if (bytes_written < 0) {
