@@ -6,7 +6,7 @@ int main() {
     char choice[10];
     char command[256];
 
-    printf("GET or POST: ");
+    printf("HTTP method: ");
     scanf("%9s", choice);
 
     if (strcmp(choice, "GET") == 0) {
@@ -18,6 +18,13 @@ int main() {
         scanf(" %99[^\n]", body);
 
         snprintf(command, sizeof(command), "curl -X POST -d '%s' http://localhost:8080", body);
+        system(command);
+    } else if (strcmp(choice, "PUT") == 0) {
+        char body[100];
+        printf("Enter PUT body: ");
+        scanf(" %99[^\n]", body);
+
+        snprintf(command, sizeof(command), "curl -X PUT -d '%s' http://localhost:8080", body);
         system(command);
     } else {
         printf("Invalid request\n");

@@ -32,13 +32,15 @@ HttpRequest parse_request(const char *request) {
 void print_request(HttpRequest *req) {
     printf("Method: %s\n", req->method);
     printf("Path: %s\n", req->path);
-    if (req->body && strlen(req->body) > 0) {
-        printf("Body: %s\n", req->body);
-    } else if (strcmp(req->method, "GET") == 0){
-        // No body to print for GET requests
-    } else {
-        printf("Body: (empty)\n");
-    }
+    if (strcmp(req->method, "POST") == 0 ||
+            strcmp(req->method, "PUT") == 0 ||
+            strcmp(req->method, "PATCH") == 0 ||
+            strcmp(req->method, "DELETE") == 0) {
+            printf("Body: %s\n", req->body);
+        } else {
+            // Methods GET, HEAD, OPTIONS, TRACE, CONNECT, LINK, UNLINK do not have a body
+            printf("Body: N/A\n");
+        }
 }
 
 int main() {
