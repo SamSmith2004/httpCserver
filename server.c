@@ -1,17 +1,18 @@
 #include "http_server.h"
+#include "thread_pool.h"
 #include <arpa/inet.h>
-#include <netinet/in.h>
-#include <pthread.h>
-#include <errno.h>
-#include <sys/time.h>
 #include <signal.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <time.h>
+#include <string.h>
+#include <errno.h>
 
+// volatile is used to ensure changes made by the signal handler are immediately visible in the main loop
+// prevents missing the signal to stop the server
 volatile sig_atomic_t keep_running = 1;
+// sig_atomic_t is an atomically accessible int that always performs a single, uninterruptible operation
 
 void sigint_handler(int sig) {
     keep_running = 0;
@@ -22,13 +23,7 @@ void cleanup(int server_fd) { // Shutdown
   close(server_fd);
 }
 
-// void pointer to pass any type of data
-void *handle_client(void *arg) {
-  int client_socket = *(int *)arg;
-  // Have to cast to int* to use the value, void* was neccessary due to
-  // pthread_create
-  free(arg);
-
+void handle_client(int client_socket) {
   char buffer[BUFFER_SIZE] = {0};
 
   // Read the request
@@ -36,7 +31,7 @@ void *handle_client(void *arg) {
   if (bytes_read < 0) {
     perror("Read failed");
     close(client_socket);
-    return NULL;
+    return;
   }
   buffer[bytes_read] = '\0'; // Null terminate the buffer
 
@@ -58,7 +53,6 @@ void *handle_client(void *arg) {
   }
 
   close(client_socket);
-  return NULL;
 }
 
 // Parse the HTTP request and extrat the method, path, and body
@@ -146,6 +140,12 @@ int main() {
   // Set up signal handling
   signal(SIGINT, sigint_handler);
 
+  thread_pool_t* pool = thread_pool_create(6); // Create a thread pool with 6 threads
+  if (pool == NULL) {
+      perror("Failed to create thread pool");
+      return -1;
+  }
+
   printf("Server listening on localhost:%d\n", PORT);
   printf("Press Ctrl+C to stop the server.\n");
 
@@ -170,31 +170,10 @@ int main() {
       continue; // Try again on next iteration
     }
 
-    // Allocate memory for the client socket file descriptor
-    int *client_sock = malloc(sizeof(int));
-    *client_sock = new_socket;
-
-    // Create a new thread to handle the client
-    // NULL = default thread attributes
-    pthread_t tid;
-    if (pthread_create(&tid, NULL, handle_client, (void *)client_sock) != 0) {
-      // pthread create takes in tid as address,
-      // thread attributes,
-      // the function the thread shoudld run
-      // and the arg for function in param 3
-      // (you cannot pass it directly into the func as it will run on main thread)
-      perror("Thread creation failed");
-      close(new_socket);
-      free(client_sock);
-      // Continue to accept new connections
-    } else {
-      // Detach the thread to avoid memory leaks
-      if (pthread_detach(tid) != 0) {
-        perror("Thread detach failed");
-        // Detaching thread so resources are automatically reclaimed upon finish
-      }
-    }
+    // Add the new socket to the thread pool
+    thread_pool_add_task(pool, new_socket);
   }
+  thread_pool_destroy(pool);
   cleanup(server_fd); // Close the server socket
   return 0;
 }

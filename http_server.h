@@ -2,6 +2,8 @@
 #define HTTP_SERVER_H
 
 #include <stdint.h>
+#include <pthread.h>
+#include <stdlib.h>
 
 #define PORT 8080
 #define BUFFER_SIZE 1024
@@ -19,5 +21,6 @@ typedef struct {
 
 HttpRequest parse_request(const char *request);
 void print_request(HttpRequest *req);
+void handle_client(int client_socket);
 
 #endif

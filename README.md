@@ -3,5 +3,5 @@ Made for learning purposes.
 
 #### Compile step:
 ```C
-gcc -o start server.c
+gcc server.c queue.c thread_pool.c -lpthread -O2 -o start
 ```
