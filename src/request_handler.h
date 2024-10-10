@@ -13,7 +13,7 @@ typedef struct {
     char version[10];
     char headers[MAX_HEADERS][MAX_HEADER_LENGTH];
     int header_count;
-    char *body;
+    const char *body;
 } HttpRequest;
 
 HttpRequest parse_request(const char *request);
