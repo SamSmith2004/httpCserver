@@ -1,5 +1,34 @@
 #include "request_handler.h"
 
+Endpoint endpoints[MAX_ENDPOINTS]; // Array of endpoints
+int endpoint_count = 0;
+pthread_mutex_t endpoints_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex for endpoints
+
+int find_or_create_endpoint(const char* path) {
+    pthread_mutex_lock(&endpoints_mutex);
+
+    // Find the endpoint with the given path
+    int index = -1;
+    for (int i = 0; i < endpoint_count; i++) {
+        if (strcmp(endpoints[i].path, path) == 0) {
+            index = i;
+            break;
+        }
+    }
+
+    // Create a new endpoint if it does not exist
+    if (index == -1 && endpoint_count < MAX_ENDPOINTS) {
+        index = endpoint_count;
+        strncpy(endpoints[index].path, path, MAX_PATH_LENGTH - 1);
+        endpoints[index].data = NULL;
+        pthread_mutex_init(&endpoints[index].mutex, NULL);
+        endpoint_count++;
+    }
+
+    pthread_mutex_unlock(&endpoints_mutex);
+    return index;
+}
+
 // Parse the HTTP request and extrat the method, path, and body
 HttpRequest parse_request(const char *request) {
   HttpRequest req = {0};
@@ -13,6 +42,13 @@ HttpRequest parse_request(const char *request) {
     sscanf(curr, "%9s %255s %9s", req.method,
     req.path, req.version); // scan the request line and store the method and path
     curr = end + 2;   // Move past \r\n
+  }
+
+  int index = find_or_create_endpoint(req.path);
+
+  if (index == -1) {
+    printf("Error: No space for new endpoint\n");
+    return req;
   }
 
   // Parse headers
@@ -39,11 +75,46 @@ HttpRequest parse_request(const char *request) {
   // Body is the rest of the request
   if (*curr != '\0') {
     req.body = curr;
+    size_t body_length = strlen(req.body);
+
+    pthread_mutex_lock(&endpoints[index].mutex);
+
+    // Free previous data if it exists
+    if (endpoints[index].data != NULL) {
+      free(endpoints[index].data);
+    }
+
+    // Allocate memory for the new data
+    endpoints[index].data = malloc(body_length + 1);
+    if (endpoints[index].data == NULL) {
+      fprintf(stderr, "Failed to allocate memory for endpoint data\n");
+    } else {
+      strncpy(endpoints[index].data, req.body, body_length);
+      endpoints[index].data[body_length] = '\0';  // Null-terminate the string
+    }
+
+    pthread_mutex_unlock(&endpoints[index].mutex);
   } else {
     req.body = NULL;
   }
 
   return req;
+}
+
+char* get_endpoint_data(int index) {
+    char* data_copy = NULL;
+    pthread_mutex_lock(&endpoints[index].mutex);
+
+    if (endpoints[index].data != NULL) {
+        size_t data_length = strlen(endpoints[index].data);
+        data_copy = malloc(data_length + 1);
+        if (data_copy != NULL) {
+            strcpy(data_copy, endpoints[index].data);
+        }
+    }
+
+    pthread_mutex_unlock(&endpoints[index].mutex);
+    return data_copy;
 }
 
 void print_request(HttpRequest *req) {

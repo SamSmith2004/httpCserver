@@ -40,17 +40,35 @@ void handle_client(int client_socket) {
   print_request(&req);
   printf("---------------\n");
 
-  // Prepare and send a simple HTTP response
-  const char *response = "HTTP/1.1 200 OK\r\nContent-Type: "
-                         "text/plain\r\nContent-Length: 14\r\n\r\nSuccess!\n";
+  int index = find_or_create_endpoint(req.path);
 
-  ssize_t bytes_written = write(client_socket, response, strlen(response));
-  if (bytes_written < 0) {
-    perror("Write failed"); // less than 0 bytes = failure
-  } else if (bytes_written < strlen(response)) {
-    fprintf(stderr, "Partial write occurred\n");
-    // Not all bytes were written hence partial write
-  }
+  if (index != -1) {
+     // Get the endpoint data
+     char* endpoint_data = get_endpoint_data(index);
+
+     // Prepare and send the HTTP response
+     char response[BUFFER_SIZE];
+     if (endpoint_data != NULL) {
+       snprintf(response, BUFFER_SIZE,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %zu\r\n\r\n%s\n",
+                strlen(endpoint_data) + 1, endpoint_data);
+       free(endpoint_data);
+     } else {
+       snprintf(response, BUFFER_SIZE,
+                "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nNo data found\n");
+     }
+
+     ssize_t bytes_written = write(client_socket, response, strlen(response));
+     if (bytes_written < 0) {
+       perror("Write failed");
+     } else if (bytes_written < strlen(response)) {
+       fprintf(stderr, "Partial write occurred\n");
+     }
+   } else {
+     // Handle the case when no endpoint was found or created
+     const char *error_response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: 21\r\n\r\nInternal Server Error\n";
+     write(client_socket, error_response, strlen(error_response));
+   }
 
   close(client_socket);
 }
