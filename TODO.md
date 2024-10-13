@@ -1,10 +1,10 @@
 ### TODO:
-- [ ] HTTP response handling - e.g., 404 Not Found, 500 Internal Server Error
+- [ X ] HTTP response handling - e.g., 404 Not Found, 500 Internal Server Error
 - [ X ] Update parse_request function to handle HTTP headers
 - [ ] Implement handlers for different HTTP methods
   - [ X ] GET
   - [ X ] POST
-  - [ ] PUT
+  - [ X ] PUT
   - [ ] DELETE
   - [ ] HEAD
   - [ ] OPTIONS
@@ -12,7 +12,9 @@
   - [ ] CONNECT
 - [ X ] Add multithreading support
 - [ X ] Implement a thread pool
+- [ ] Content type handling e.g text/html, application/json
 - [ ] Input validation and sanitisation
+ - [ ] Authentication
 
 - Cleanup Outputs
 - Optimise

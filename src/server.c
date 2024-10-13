@@ -1,26 +1,26 @@
 #include "http_server.h"
-#include "thread_pool.h"
 #include "request_handler.h"
+#include "thread_pool.h"
 #include <arpa/inet.h>
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <sys/socket.h>
-#include <unistd.h>
 #include <time.h>
-#include <errno.h>
+#include <unistd.h>
 
-// volatile is used to ensure changes made by the signal handler are immediately visible in the main loop
-// prevents missing the signal to stop the server
+// volatile is used to ensure changes made by the signal handler are immediately
+// visible in the main loop prevents missing the signal to stop the server
 volatile sig_atomic_t keep_running = 1;
-// sig_atomic_t is an atomically accessible int that always performs a single, uninterruptible operation
+// sig_atomic_t is an atomically accessible int that always performs a single,
+// uninterruptible operation
 
-void sigint_handler(int sig) {
-    keep_running = 0;
-}
+void sigint_handler(int sig) { keep_running = 0; }
 
 void cleanup(int server_fd) { // Shutdown
   printf("\nShutting down the server... \n");
   close(server_fd);
+  free_endpoint_data();
 }
 
 void handle_client(int client_socket) {
@@ -42,34 +42,48 @@ void handle_client(int client_socket) {
 
   int index = find_or_create_endpoint(req.path);
 
+  const char *headers[] = {"Content-Type: text/plain", "Server: MyServer/1.0"};
+  HttpResponse *response = create_response(200, "OK", headers, 2);
+
+  if (response == NULL) {
+    const char *error_response =
+        "HTTP/1.1 500 Internal Server Error\r\nContent-Type: "
+        "text/plain\r\nContent-Length: 21\r\n\r\nInternal Server Error\n";
+    write(client_socket, error_response, strlen(error_response));
+    close(client_socket);
+    return;
+  }
+
   if (index != -1) {
-     // Get the endpoint data
-     char* endpoint_data = get_endpoint_data(index);
+    char *endpoint_data = get_endpoint_data(index);
+    if (endpoint_data != NULL) {
+      set_response_body(response, endpoint_data, strlen(endpoint_data));
+      free(endpoint_data);
+    } else {
+      update_response_status(response, 404, "Not Found");
+      set_response_body(response, "No data found\n", 13);
+    }
+  } else {
+    // Handle the case when no endpoint was found or created
+    update_response_status(response, 500, "Internal Server Error");
+    set_response_body(response, "Internal Server Error", 21);
+  }
 
-     // Prepare and send the HTTP response
-     char response[BUFFER_SIZE];
-     if (endpoint_data != NULL) {
-       snprintf(response, BUFFER_SIZE,
-                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %zu\r\n\r\n%s\n",
-                strlen(endpoint_data) + 1, endpoint_data);
-       free(endpoint_data);
-     } else {
-       snprintf(response, BUFFER_SIZE,
-                "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nNo data found\n");
-     }
+  char content_length[32];
+  snprintf(content_length, sizeof(content_length), "Content-Length: %zu",
+           response->body_length);
 
-     ssize_t bytes_written = write(client_socket, response, strlen(response));
-     if (bytes_written < 0) {
-       perror("Write failed");
-     } else if (bytes_written < strlen(response)) {
-       fprintf(stderr, "Partial write occurred\n");
-     }
-   } else {
-     // Handle the case when no endpoint was found or created
-     const char *error_response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: 21\r\n\r\nInternal Server Error\n";
-     write(client_socket, error_response, strlen(error_response));
-   }
+  size_t response_length;
+  char *serialized_response = serialize_response(response, &response_length);
+  // Convert response to string
+  if (serialized_response != NULL) {
+    write(client_socket, serialized_response, response_length);
+    free(serialized_response);
+  }
 
+  if (response != NULL) {
+    free_response(response);
+  }
   close(client_socket);
 }
 
@@ -87,14 +101,15 @@ int main() {
     return -1;
   }
 
-  // Set SO_REUSEADDR, allows server to bind to address that was recently used by another socket
+  // Set SO_REUSEADDR, allows server to bind to address that was recently used
+  // by another socket
   int opt = 1;
   // preventing "Address already in use" errors
   if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-      // SOL_SOCKET is the socket layer itself
-      // &opt is a pointer to the option value (1 means enable)
-      perror("setsockopt SO_REUSEADDR failed");
-      return -1;
+    // SOL_SOCKET is the socket layer itself
+    // &opt is a pointer to the option value (1 means enable)
+    perror("setsockopt SO_REUSEADDR failed");
+    return -1;
   }
 
   // Config server address
@@ -121,26 +136,29 @@ int main() {
   // Set up signal handling
   signal(SIGINT, sigint_handler);
 
-  thread_pool_t* pool = thread_pool_create(6); // Create a thread pool with 6 threads
+  thread_pool_t *pool =
+      thread_pool_create(6); // Create a thread pool with 6 threads
   if (pool == NULL) {
-      perror("Failed to create thread pool");
-      return -1;
+    perror("Failed to create thread pool");
+    return -1;
   }
 
   printf("Server listening on localhost:%d\n", PORT);
   printf("Press Ctrl+C to stop the server.\n");
 
   while (keep_running) {
-      // Set a timeout for the accept() call
-      struct timeval tv = {.tv_sec = 1, .tv_usec = 0};
-      // tv specifies the timeout: 1 second and 0 microseconds (tv_usec)
-      if (setsockopt(server_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv) < 0) {
-          // SO_RCVTIMEO sets a timeout for receive operations ex accept()
-          // allows the server to periodically check the keep_running flag
-          perror("setsockopt SO_RCVTIMEO failed");
-          continue;
-      }
-    if ((new_socket = accept(server_fd, (struct sockaddr *)&address,(socklen_t *)&addrlen)) < 0) {
+    // Set a timeout for the accept() call
+    struct timeval tv = {.tv_sec = 1, .tv_usec = 0};
+    // tv specifies the timeout: 1 second and 0 microseconds (tv_usec)
+    if (setsockopt(server_fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv,
+                   sizeof tv) < 0) {
+      // SO_RCVTIMEO sets a timeout for receive operations ex accept()
+      // allows the server to periodically check the keep_running flag
+      perror("setsockopt SO_RCVTIMEO failed");
+      continue;
+    }
+    if ((new_socket = accept(server_fd, (struct sockaddr *)&address,
+                             (socklen_t *)&addrlen)) < 0) {
       // cast address to pointer of type `struct sockaddr` and cast addrlen to
       // pointer of type `socklen_t`
       if (errno == EWOULDBLOCK || errno == EAGAIN) {
@@ -155,6 +173,6 @@ int main() {
     thread_pool_add_task(pool, new_socket);
   }
   thread_pool_destroy(pool);
-  cleanup(server_fd); // Close the server socket
+  cleanup(server_fd); // Close the server socket and free endpoint data
   return 0;
 }
