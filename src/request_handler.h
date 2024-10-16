@@ -18,6 +18,7 @@ typedef struct {
     char headers[MAX_HEADERS][MAX_HEADER_LENGTH];
     int header_count;
     const char *body;
+    int response_code;
 } HttpRequest;
 
 typedef struct {
@@ -35,10 +36,11 @@ typedef struct {
     pthread_mutex_t mutex;
 } Endpoint;
 
+const char *get_status_message(int status_code);
 HttpRequest parse_request(const char *request);
 int find_or_create_endpoint(const char* path);
 char* get_endpoint_data(int index);
-HttpResponse *create_response(int status_code, const char *status_message, const char **headers, int header_count);
+HttpResponse *create_response(int status_code, const char **headers, int header_count);
 void set_response_body(HttpResponse *response, const char *body, size_t body_length);
 char *serialize_response(HttpResponse *response, size_t *total_length);
 void update_response_status(HttpResponse *response, int status_code, const char *status_message);

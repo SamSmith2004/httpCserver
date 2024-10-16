@@ -40,10 +40,8 @@ void handle_client(int client_socket) {
   print_request(&req);
   printf("---------------\n");
 
-  int index = find_or_create_endpoint(req.path);
-
   const char *headers[] = {"Content-Type: text/plain", "Server: MyServer/1.0"};
-  HttpResponse *response = create_response(200, "OK", headers, 2);
+  HttpResponse *response = create_response(200, headers, 2);
 
   if (response == NULL) {
     const char *error_response =
@@ -54,19 +52,28 @@ void handle_client(int client_socket) {
     return;
   }
 
-  if (index != -1) {
-    char *endpoint_data = get_endpoint_data(index);
-    if (endpoint_data != NULL) {
-      set_response_body(response, endpoint_data, strlen(endpoint_data));
-      free(endpoint_data);
+  if (req.response_code == 200) {
+    int index = find_or_create_endpoint(req.path);
+    if (index != -1) {
+      char *endpoint_data = get_endpoint_data(index);
+      if (endpoint_data != NULL) {
+        set_response_body(response, endpoint_data, strlen(endpoint_data));
+        free(endpoint_data);
+      } else {
+        update_response_status(response, 404, "Not Found");
+        set_response_body(response, "No data found\n", 13);
+      }
     } else {
-      update_response_status(response, 404, "Not Found");
-      set_response_body(response, "No data found\n", 13);
+      // Handle the case when no endpoint was found or created
+      update_response_status(response, 500, "Internal Server Error");
+      set_response_body(response, "Internal Server Error", 21);
     }
+  } else if (req.response_code == 204) {
+    update_response_status(response, 204, "Internal Server Error");
+    // No body for 204 response
   } else {
-    // Handle the case when no endpoint was found or created
-    update_response_status(response, 500, "Internal Server Error");
-    set_response_body(response, "Internal Server Error", 21);
+    set_response_body(response, get_status_message(req.response_code),
+                      strlen(get_status_message(req.response_code)));
   }
 
   char content_length[32];
@@ -77,14 +84,22 @@ void handle_client(int client_socket) {
   char *serialized_response = serialize_response(response, &response_length);
   // Convert response to string
   if (serialized_response != NULL) {
-    write(client_socket, serialized_response, response_length);
+    ssize_t bytes_written =
+        write(client_socket, serialized_response, response_length);
+    if (bytes_written < 0) {
+      // Handle error
+      perror("Failed to write response");
+    } else if ((size_t)bytes_written < response_length) {
+      // Handle partial write
+      fprintf(stderr, "Partial write occurred\n");
+    }
     free(serialized_response);
-  }
 
-  if (response != NULL) {
-    free_response(response);
+    if (response != NULL) {
+      free_response(response);
+    }
+    close(client_socket);
   }
-  close(client_socket);
 }
 
 // Setup scoket, bind, listen, accept, and handle client
@@ -95,8 +110,8 @@ int main() {
 
   // Create TCP/IP socket
   if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
-    // AF_INET = IPv4, SOCK_STREAM = TCP, 0 = 'use default protocol for address
-    // family & socket type'
+    // AF_INET = IPv4, SOCK_STREAM = TCP, 0 = 'use default protocol for
+    // address family & socket type'
     perror("Socket creation failed");
     return -1;
   }

@@ -31,11 +31,27 @@ int find_or_create_endpoint(const char *path) {
   return index;
 }
 
+const char *get_status_message(int status_code) {
+  switch (status_code) {
+  case 200:
+    return "OK";
+  case 204:
+    return "No Content";
+  case 404:
+    return "Not Found";
+  case 500:
+    return "Internal Server Error";
+  default:
+    return "Unknown Status";
+  }
+}
+
 // Parse the HTTP request and extrat the method, path, and body
 HttpRequest parse_request(const char *request) {
   HttpRequest req = {0};
   const char *curr = request;
   const char *end;
+  req.response_code = 200;
 
   // Parse request line (e.g., "GET /path HTTP/1.1")
   end = strstr(curr, "\r\n"); // Gets the first occurence of "\r\n"
@@ -50,7 +66,20 @@ HttpRequest parse_request(const char *request) {
 
   if (index == -1) {
     printf("Error: No space for new endpoint\n");
+    req.response_code = 500;
     return req;
+  }
+
+  if (strcmp(req.method, "DELETE") == 0) {
+    pthread_mutex_lock(&endpoints[index].mutex);
+    if (endpoints[index].data != NULL) {
+      free(endpoints[index].data);
+      endpoints[index].data = NULL;
+      req.response_code = 204;
+    } else {
+      req.response_code = 404;
+    }
+    pthread_mutex_unlock(&endpoints[index].mutex);
   }
 
   // Parse headers
@@ -122,16 +151,17 @@ char *get_endpoint_data(int index) {
   return data_copy;
 }
 
-HttpResponse *create_response(int status_code, const char *status_message,
-                              const char **headers, int header_count) {
+HttpResponse *create_response(int status_code, const char **headers,
+                              int header_count) {
   HttpResponse *response = malloc(sizeof(HttpResponse));
   if (response == NULL) {
     return NULL;
   }
 
   response->status_code = status_code;
+  const char *status_message = get_status_message(status_code);
   strncpy(response->status_message, status_message,
-          sizeof(response->status_message) - 1); // Copy status message
+          sizeof(response->status_message) - 1);
   response->status_message[sizeof(response->status_message) - 1] = '\0';
 
   response->header_count = 0;
@@ -221,17 +251,18 @@ void print_request(HttpRequest *req) {
       strcmp(req->method, "PATCH") == 0 || strcmp(req->method, "DELETE") == 0) {
     printf("Body: %s\n", req->body);
   } else {
-    // Methods GET, HEAD, OPTIONS, TRACE, CONNECT, LINK, UNLINK do not have a body
+    // Methods GET, HEAD, OPTIONS, TRACE, CONNECT, LINK, UNLINK do not have a
+    // body
     printf("Body: N/A\n");
   }
 }
 
 void free_endpoint_data() {
-    for (int i = 0; i < endpoint_count; i++) {
-        pthread_mutex_lock(&endpoints[i].mutex);
-        free(endpoints[i].data);
-        endpoints[i].data = NULL;
-        pthread_mutex_unlock(&endpoints[i].mutex);
-        pthread_mutex_destroy(&endpoints[i].mutex);
-    }
+  for (int i = 0; i < endpoint_count; i++) {
+    pthread_mutex_lock(&endpoints[i].mutex);
+    free(endpoints[i].data);
+    endpoints[i].data = NULL;
+    pthread_mutex_unlock(&endpoints[i].mutex);
+    pthread_mutex_destroy(&endpoints[i].mutex);
+  }
 }

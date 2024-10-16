@@ -5,13 +5,14 @@
   - [ X ] GET
   - [ X ] POST
   - [ X ] PUT
-  - [ ] DELETE
+  - [ X ] DELETE
   - [ ] HEAD
   - [ ] OPTIONS
   - [ ] TRACE
   - [ ] CONNECT
 - [ X ] Add multithreading support
 - [ X ] Implement a thread pool
+- [ ] Update serverside logging of requests
 - [ ] Content type handling e.g text/html, application/json
 - [ ] Input validation and sanitisation
  - [ ] Authentication
