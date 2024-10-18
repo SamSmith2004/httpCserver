@@ -5,6 +5,26 @@ int endpoint_count = 0;
 pthread_mutex_t endpoints_mutex =
     PTHREAD_MUTEX_INITIALIZER; // Mutex for endpoints
 
+static const struct content_type CONTENT_TYPES[] = {
+    {".txt", "text/plain"},
+    {".html", "text/html"},
+    {".htm", "text/html"},
+    {".css", "text/css"},
+    {".js", "text/javascript"},
+    {".json", "application/json"},
+    {".xml", "application/xml"},
+    {".jpg", "image/jpeg"},
+    {".jpeg", "image/jpeg"},
+    {".png", "image/png"},
+    {".gif", "image/gif"},
+    {".svg", "image/svg+xml"},
+    {".mp3", "audio/mpeg"},
+    {".mp4", "video/mp4"},
+    {".pdf", "application/pdf"},
+    {".bin", "application/octet-stream"},
+    {NULL, "application/octet-stream"} // Default type
+};
+
 int find_or_create_endpoint(const char *path) {
   pthread_mutex_lock(&endpoints_mutex);
 
@@ -37,13 +57,54 @@ const char *get_status_message(int status_code) {
     return "OK";
   case 204:
     return "No Content";
+  case 400:
+    return "Bad Request";
   case 404:
     return "Not Found";
+  case 412:
+    return "Precondition Failed: Content-Type and Content-Length required";
+  case 415:
+    return "Unsupported Media Type";
   case 500:
     return "Internal Server Error";
   default:
     return "Unknown Status";
   }
+}
+
+HttpRequest body_parser(const char *curr, HttpRequest req, int index) {
+  // Move past the empty line separating headers from body
+  if (curr[0] == '\r' && curr[1] == '\n') {
+    curr += 2;
+  }
+
+  // Body is the rest of the request
+  if (*curr != '\0') {
+    req.body = curr;
+    size_t body_length = strlen(req.body);
+
+    pthread_mutex_lock(&endpoints[index].mutex);
+
+    // Free previous data if it exists
+    if (endpoints[index].data != NULL) {
+      free(endpoints[index].data);
+    }
+
+    // Allocate memory for the new data
+    endpoints[index].data = malloc(body_length + 1);
+    if (endpoints[index].data == NULL) {
+      fprintf(stderr, "Failed to allocate memory for endpoint data\n");
+    } else {
+      strncpy(endpoints[index].data, req.body, body_length);
+      endpoints[index].data[body_length] = '\0'; // Null-terminate the string
+    }
+
+    pthread_mutex_unlock(&endpoints[index].mutex);
+  } else {
+    req.body = NULL;
+  }
+
+  return req;
 }
 
 // Parse the HTTP request and extrat the method, path, and body
@@ -82,6 +143,10 @@ HttpRequest parse_request(const char *request) {
     pthread_mutex_unlock(&endpoints[index].mutex);
   }
 
+  _Bool requireBody = strcmp(req.method, "POST") == 0 ||
+                      strcmp(req.method, "PUT") == 0 ||
+                      strcmp(req.method, "PATCH") == 0;
+
   // Parse headers
   req.header_count = 0;
   while (curr[0] != '\r' ||
@@ -101,37 +166,51 @@ HttpRequest parse_request(const char *request) {
     curr = end + 2; // Move past \r\n
   }
 
-  // Move past the empty line separating headers from body
-  if (curr[0] == '\r' && curr[1] == '\n') {
-    curr += 2;
-  }
+  char *contentType = NULL;
+  if (requireBody) {
+    _Bool hasContentLength = 0;
+    _Bool hasContentType = 0;
+    for (int i = 0; i < req.header_count; i++) {
+      char *header = req.headers[i];
+      char *value = strchr(header, ':');
+      if (value) {
+        *value = '\0';
+        value++; // Move past the colon
+        while (*value == ' ')
+          value++; // Skip spaces
 
-  // Body is the rest of the request
-  if (*curr != '\0') {
-    req.body = curr;
-    size_t body_length = strlen(req.body);
-
-    pthread_mutex_lock(&endpoints[index].mutex);
-
-    // Free previous data if it exists
-    if (endpoints[index].data != NULL) {
-      free(endpoints[index].data);
+        if (strcmp(header, "Content-Length") == 0)
+          hasContentLength = 1;
+        else if (strcmp(header, "Content-Type") == 0) {
+          contentType = value;
+          hasContentType = 1;
+        }
+      }
     }
-
-    // Allocate memory for the new data
-    endpoints[index].data = malloc(body_length + 1);
-    if (endpoints[index].data == NULL) {
-      fprintf(stderr, "Failed to allocate memory for endpoint data\n");
-    } else {
-      strncpy(endpoints[index].data, req.body, body_length);
-      endpoints[index].data[body_length] = '\0'; // Null-terminate the string
+    if (!hasContentType && !hasContentLength) {
+      printf("Error: No space for new endpoint\n");
+      req.response_code = 412;
+      return req;
     }
-
-    pthread_mutex_unlock(&endpoints[index].mutex);
   } else {
-    req.body = NULL;
+    return req;
   }
 
+  if (index != -1) {
+    if (contentType != NULL && strcmp(contentType, "text/plain") == 0 ||
+        strcmp(contentType, "text/html") == 0 ||
+        strcmp(contentType, "text/css") == 0 ||
+        strcmp(contentType, "text/javascript") == 0 ||
+        strcmp(contentType, "application/json") == 0 ||
+        strcmp(contentType, "application/xml") == 0) {
+      req = body_parser(curr, req, index);
+    } else {
+      // Add other media types later
+      req.response_code = 415; // Unsupported Media Type
+    }
+  } else {
+    req.response_code = 500; // Internal Server Error
+  }
   return req;
 }
 
@@ -247,14 +326,8 @@ void print_request(HttpRequest *req) {
   for (int i = 0; i < req->header_count; i++) {
     printf("  %s\n", req->headers[i]);
   }
-  if (strcmp(req->method, "POST") == 0 || strcmp(req->method, "PUT") == 0 ||
-      strcmp(req->method, "PATCH") == 0 || strcmp(req->method, "DELETE") == 0) {
-    printf("Body: %s\n", req->body);
-  } else {
-    // Methods GET, HEAD, OPTIONS, TRACE, CONNECT, LINK, UNLINK do not have a
-    // body
-    printf("Body: N/A\n");
-  }
+  printf("Status Code: %d\n", req->response_code);
+  printf("Body: %s\n", req->body);
 }
 
 void free_endpoint_data() {

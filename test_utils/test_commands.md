@@ -5,12 +5,12 @@ curl -v http://localhost:8080/
 
 2. POST request with data:
 ```bash
-curl -v -X POST -d "name=John&age=30" http://localhost:8080/
+curl -v -X POST -H "Content-Type: text/plain" -d "This is plain text POST" http://localhost:8080/
 ```
 
 3. PUT request:
 ```bash
-curl -v -X PUT -d "updated_data" http://localhost:8080/
+curl -v -X PUT -H "Content-Type: text/plain" -d "This is plain text PUT" http://localhost:8080/
 ```
 
 4. DELETE request:

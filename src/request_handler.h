@@ -11,6 +11,11 @@
 #define MAX_ENDPOINTS 10
 #define MAX_PATH_LENGTH 10
 
+struct content_type {
+    const char *extension;
+    const char *type;
+};
+
 typedef struct {
     char method[10];
     char path[256];

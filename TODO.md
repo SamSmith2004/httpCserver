@@ -12,8 +12,10 @@
   - [ ] CONNECT
 - [ X ] Add multithreading support
 - [ X ] Implement a thread pool
-- [ ] Update serverside logging of requests
 - [ ] Content type handling e.g text/html, application/json
+  - [ X ] Content specific handling
+  - [ X ] Support for text formats
+  - [ ] Support for binary formats
 - [ ] Input validation and sanitisation
  - [ ] Authentication
 
