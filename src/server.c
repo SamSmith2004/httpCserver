@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <sys/socket.h>
 #include <time.h>
@@ -25,13 +26,16 @@ void cleanup(int server_fd) { // Shutdown
 
 void handle_client(int client_socket) {
   char buffer[BUFFER_SIZE] = {0};
+  HttpResponse *response = NULL;
+  int index = -1;
+  int mutex_locked = 0;
 
-  // Read the request
   ssize_t bytes_read = read(client_socket, buffer, BUFFER_SIZE);
   if (bytes_read < 0) {
     perror("Read failed");
-    close(client_socket);
-    return;
+    response = create_response(500, NULL, 0);
+    set_response_body(response, "Internal Server Error\n", 22);
+    goto send_response;
   }
   buffer[bytes_read] = '\0'; // Null terminate the buffer
 
@@ -40,66 +44,172 @@ void handle_client(int client_socket) {
   print_request(&req);
   printf("---------------\n");
 
-  const char *headers[] = {"Content-Type: text/plain", "Server: MyServer/1.0"};
-  HttpResponse *response = create_response(200, headers, 2);
-
-  if (response == NULL) {
-    const char *error_response =
-        "HTTP/1.1 500 Internal Server Error\r\nContent-Type: "
-        "text/plain\r\nContent-Length: 21\r\n\r\nInternal Server Error\n";
-    write(client_socket, error_response, strlen(error_response));
-    close(client_socket);
-    return;
+  index = find_or_create_endpoint(req.path);
+  if (index == -1) {
+    response = create_response(500, NULL, 0);
+    set_response_body(response, "Internal Server Error\n", 22);
+    goto send_response;
   }
 
-  if (req.response_code == 200) {
-    int index = find_or_create_endpoint(req.path);
-    if (index != -1) {
+  pthread_mutex_lock(&endpoints[index].mutex);
+  mutex_locked = 1;
+
+  if (strcmp(req.method, "GET") == 0) {
+    if (endpoints[index].file != NULL && endpoints[index].is_binary) {
+      // Read from the file and send its contents
+      char buffer[1024];
+      size_t bytes_read;
+
+      // Send headers first
+      const char *headers[] = {"Content-Type: application/octet-stream",
+                               "Transfer-Encoding: chunked"};
+      response = create_response(200, headers, 2);
+      size_t response_length;
+      char *serialized_response =
+          serialize_response(response, &response_length);
+
+      size_t bytes_serial =
+          write(client_socket, serialized_response, response_length);
+      if (bytes_serial < 0) {
+        perror("Failed to write serialized response\n");
+        goto send_response;
+      } else if (bytes_serial < response_length) {
+        perror("Pariak write occurred when sending serialized response\n");
+        goto send_response;
+      }
+      free(serialized_response);
+      free_response(response);
+      response = NULL;
+
+      // Send file contents in chunks
+      rewind(endpoints[index].file);
+      while ((bytes_read = fread(buffer, 1, sizeof(buffer),
+                                 endpoints[index].file)) > 0) {
+        char chunk_header[16];
+        snprintf(chunk_header, sizeof(chunk_header), "%zx\r\n", bytes_read);
+
+        ssize_t bytes_written_h =
+            write(client_socket, chunk_header, strlen(chunk_header));
+        if (bytes_written_h < 0) {
+          perror("Failed to write chunk header");
+          goto send_response;
+        } else if (bytes_written_h < strlen(chunk_header)) {
+          perror("Pariak write occurred when sending chunk header\n");
+          goto send_response;
+        }
+
+        ssize_t bytes_written_b = write(client_socket, buffer, bytes_read);
+        if (bytes_written_b < 0) {
+          perror("Failed to write buffer");
+          goto send_response;
+        } else if (bytes_written_b < bytes_read) {
+          perror("Pariak write occurred when sending buffer\n");
+          goto send_response;
+        }
+
+        ssize_t bytes_written_e = write(client_socket, "\r\n", 2);
+        if (bytes_written_e < 0) {
+          perror("Failed to write '\r\n'");
+          goto send_response;
+        } else if (bytes_written_e < 2) {
+          perror("Pariak write occurred when sending '\r\n'\n");
+          goto send_response;
+        }
+      }
+
+      // Send the final chunk
+      ssize_t bytes_written = write(client_socket, "0\r\n\r\n", 5);
+      if (bytes_written < 0) {
+        perror("Failed to write final chunk");
+        goto send_response;
+      } else if (bytes_written < 5) {
+        perror("Partial write occurred when sending final chunk\n");
+        goto send_response;
+      }
+      goto send_response;
+
+    } else if (endpoints[index].data != NULL && !endpoints[index].is_binary) {
+      // Handle text data
       char *endpoint_data = get_endpoint_data(index);
       if (endpoint_data != NULL) {
+        const char *content_type = "Content-Type: text/plain";
+        // Will add better content type detection later
+        if (strstr(endpoint_data, "{") != NULL &&
+            strstr(endpoint_data, "}") != NULL) {
+          content_type = "Content-Type: application/json";
+        }
+
+        const char *headers[] = {content_type, "Server: MyServer/1.0"};
+        response = create_response(200, headers, 2);
         set_response_body(response, endpoint_data, strlen(endpoint_data));
         free(endpoint_data);
       } else {
-        update_response_status(response, 404, "Not Found");
-        set_response_body(response, "No data found\n", 13);
+        response = create_response(500, NULL, 0);
+        set_response_body(response, "Internal Server Error\n", 22);
       }
     } else {
-      // Handle the case when no endpoint was found or created
-      update_response_status(response, 500, "Internal Server Error");
-      set_response_body(response, "Internal Server Error", 21);
+      response = create_response(404, NULL, 0);
+      set_response_body(response, "Not Found\n", 10);
     }
-  } else if (req.response_code == 204) {
-    update_response_status(response, 204, "Internal Server Error");
-    // No body for 204 response
+  } else if (strcmp(req.method, "DELETE") == 0) {
+    if (endpoints[index].data != NULL) {
+      free(endpoints[index].data);
+      endpoints[index].data = NULL;
+      response = create_response(204, NULL, 0);
+    } else {
+      response = create_response(404, NULL, 0);
+      set_response_body(response, "Not Found\n", 10);
+    }
   } else {
+    // Handle other methods (POST, PUT, etc.)
+    response = create_response(req.response_code, NULL, 0);
     set_response_body(response, get_status_message(req.response_code),
                       strlen(get_status_message(req.response_code)));
   }
+  goto send_response;
 
-  char content_length[32];
-  snprintf(content_length, sizeof(content_length), "Content-Length: %zu",
-           response->body_length);
+send_response:
+  if (mutex_locked && index != -1) {
+    pthread_mutex_unlock(&endpoints[index].mutex);
+  }
+  if (response == NULL) {
+    response = create_response(500, NULL, 0);
+    set_response_body(response, "Internal Server Error\n", 22);
+  }
+
+  char *content_length = NULL;
+  int content_length_size =
+      snprintf(NULL, 0, "Content-Length: %zu", response->body_length) + 1;
+  content_length = (char *)malloc(content_length_size);
+  if (content_length != NULL) {
+    snprintf(content_length, content_length_size, "Content-Length: %zu",
+             response->body_length);
+    if (response->header_count < MAX_HEADERS) {
+      strncpy(response->headers[response->header_count], content_length,
+              MAX_HEADER_LENGTH - 1);
+      response->headers[response->header_count][MAX_HEADER_LENGTH - 1] = '\0';
+      response->header_count++;
+    }
+    free(content_length);
+  }
 
   size_t response_length;
   char *serialized_response = serialize_response(response, &response_length);
-  // Convert response to string
-  if (serialized_response != NULL) {
-    ssize_t bytes_written =
-        write(client_socket, serialized_response, response_length);
-    if (bytes_written < 0) {
-      // Handle error
-      perror("Failed to write response");
-    } else if ((size_t)bytes_written < response_length) {
-      // Handle partial write
-      fprintf(stderr, "Partial write occurred\n");
-    }
-    free(serialized_response);
-
-    if (response != NULL) {
-      free_response(response);
-    }
-    close(client_socket);
+  if (serialized_response == NULL) {
+    fprintf(stderr, "Failed to serialize response\n");
+    goto send_response;
   }
+  ssize_t bytes_written =
+      write(client_socket, serialized_response, response_length);
+  if (bytes_written < 0) {
+    perror("Failed to write response");
+  } else if ((size_t)bytes_written < response_length) {
+    perror("Partial write occurred when sending response");
+  }
+  free(serialized_response);
+
+  free_response(response);
+  close(client_socket);
 }
 
 // Setup scoket, bind, listen, accept, and handle client
@@ -116,8 +226,8 @@ int main() {
     return -1;
   }
 
-  // Set SO_REUSEADDR, allows server to bind to address that was recently used
-  // by another socket
+  // Set SO_REUSEADDR, allows server to bind to address that was recently
+  // used by another socket
   int opt = 1;
   // preventing "Address already in use" errors
   if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
@@ -159,6 +269,7 @@ int main() {
   }
 
   printf("Server listening on localhost:%d\n", PORT);
+  printf("Server PID: %d\n", getpid());
   printf("Press Ctrl+C to stop the server.\n");
 
   while (keep_running) {
@@ -174,11 +285,15 @@ int main() {
     }
     if ((new_socket = accept(server_fd, (struct sockaddr *)&address,
                              (socklen_t *)&addrlen)) < 0) {
-      // cast address to pointer of type `struct sockaddr` and cast addrlen to
-      // pointer of type `socklen_t`
+      // cast address to pointer of type `struct sockaddr` and cast addrlen
+      // to pointer of type `socklen_t`
       if (errno == EWOULDBLOCK || errno == EAGAIN) {
         // EWOULDBLOCK and EAGAIN indicate a timeout
         continue; // continue to check 'keep_running' again
+      }
+      if (errno == EINTR) {
+        // This can happen when a signal is received (like Ctrl+C)
+        continue;
       }
       perror("Accept failed");
       continue; // Try again on next iteration

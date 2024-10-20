@@ -1,15 +1,25 @@
 #ifndef REQUEST_HANDLER_H
 #define REQUEST_HANDLER_H
 
-#include <stdio.h>
-#include <string.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
 
 #define MAX_HEADERS 20
 #define MAX_HEADER_LENGTH 200
 #define MAX_ENDPOINTS 10
 #define MAX_PATH_LENGTH 10
+
+typedef struct {
+    char path[MAX_PATH_LENGTH];
+    char *data;
+    FILE *file;
+    pthread_mutex_t mutex;
+    bool is_binary;
+} Endpoint;
+extern Endpoint endpoints[MAX_ENDPOINTS];
 
 struct content_type {
     const char *extension;
@@ -23,6 +33,9 @@ typedef struct {
     char headers[MAX_HEADERS][MAX_HEADER_LENGTH];
     int header_count;
     const char *body;
+    FILE *temp_file;
+    char temp_filename[256];
+    char content_type[256];
     int response_code;
 } HttpRequest;
 
@@ -33,13 +46,8 @@ typedef struct {
     int header_count;
     char *body;
     size_t body_length;
+    char content_type[256];
 } HttpResponse;
-
-typedef struct {
-    char path[MAX_PATH_LENGTH];
-    char *data;
-    pthread_mutex_t mutex;
-} Endpoint;
 
 const char *get_status_message(int status_code);
 HttpRequest parse_request(const char *request);

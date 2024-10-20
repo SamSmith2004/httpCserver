@@ -1,3 +1,4 @@
+
 #include "request_handler.h"
 
 Endpoint endpoints[MAX_ENDPOINTS]; // Array of endpoints
@@ -72,7 +73,7 @@ const char *get_status_message(int status_code) {
   }
 }
 
-HttpRequest body_parser(const char *curr, HttpRequest req, int index) {
+HttpRequest text_based_handler(const char *curr, HttpRequest req, int index) {
   // Move past the empty line separating headers from body
   if (curr[0] == '\r' && curr[1] == '\n') {
     curr += 2;
@@ -166,10 +167,13 @@ HttpRequest parse_request(const char *request) {
     curr = end + 2; // Move past \r\n
   }
 
-  char *contentType = NULL;
+  char *boundary = NULL;
+  int contentLength = 0;
+  _Bool isBinary = 0;
   if (requireBody) {
     _Bool hasContentLength = 0;
     _Bool hasContentType = 0;
+    req.content_type[0] = '\0';
     for (int i = 0; i < req.header_count; i++) {
       char *header = req.headers[i];
       char *value = strchr(header, ':');
@@ -179,11 +183,29 @@ HttpRequest parse_request(const char *request) {
         while (*value == ' ')
           value++; // Skip spaces
 
-        if (strcmp(header, "Content-Length") == 0)
+        if (strcmp(header, "Content-Length") == 0) {
+          contentLength = atoi(value); // Convert to integer
           hasContentLength = 1;
-        else if (strcmp(header, "Content-Type") == 0) {
-          contentType = value;
+        } else if (strcmp(header, "Content-Type") == 0) {
+          strcpy(req.content_type, value);
           hasContentType = 1;
+        }
+
+        if (strlen(req.content_type) > 0 &&
+            strstr(req.content_type, "multipart/form-data") != NULL) {
+          isBinary = 1;
+          char *boundary_start = strstr(req.content_type, "boundary=");
+          if (boundary_start != NULL) {
+            boundary_start += 9;               // Move past "boundary="
+            boundary = strdup(boundary_start); // Duplicate the string
+            // Remove any quotes around the boundary
+            if (boundary[0] == '"') {
+              memmove(boundary, boundary + 1, strlen(boundary));
+              char *end_quote = strchr(boundary, '"');
+              if (end_quote)
+                *end_quote = '\0';
+            }
+          }
         }
       }
     }
@@ -197,16 +219,72 @@ HttpRequest parse_request(const char *request) {
   }
 
   if (index != -1) {
-    if (contentType != NULL && strcmp(contentType, "text/plain") == 0 ||
-        strcmp(contentType, "text/html") == 0 ||
-        strcmp(contentType, "text/css") == 0 ||
-        strcmp(contentType, "text/javascript") == 0 ||
-        strcmp(contentType, "application/json") == 0 ||
-        strcmp(contentType, "application/xml") == 0) {
-      req = body_parser(curr, req, index);
+    if (strlen(req.content_type) < 1 || contentLength <= 0)
+      req.response_code = 500;
+    if (isBinary && boundary != NULL) {
+      endpoints[index].is_binary = 1;
+      FILE *file;
+      const char *file_start = strstr(curr, boundary);
+      if (file_start != NULL) {
+        file_start = strstr(file_start, "\r\n\r\n");
+        if (file_start != NULL) {
+          file_start += 4; // Move past "\r\n\r\n"
+
+          const char *file_end = strstr(file_start, boundary);
+          if (file_end != NULL) {
+            file_end -= 4; // Move back from "--" and "\r\n"
+
+            pthread_mutex_lock(&endpoints[index].mutex);
+
+            // Close existing file if any
+            if (endpoints[index].file != NULL) {
+              fclose(endpoints[index].file);
+            }
+
+            // Create new file for endpoint
+            char filename[256];
+            snprintf(filename, sizeof(filename), "upload_%s.tmp",
+                     endpoints[index].path);
+            endpoints[index].file = fopen(filename, "w+b");
+
+            if (endpoints[index].file != NULL) {
+              // Write the file content
+              size_t file_size = file_end - file_start;
+              size_t bytes_written =
+                  fwrite(file_start, 1, file_size, endpoints[index].file);
+              if (bytes_written != file_size) {
+                if (ferror(endpoints[index].file)) {
+                  perror("Error writing to file");
+                  req.response_code = 500; // Internal Server Error
+                } else {
+                  fprintf(stderr, "Warning: Partial write occurred\n");
+                }
+              }
+              fflush(endpoints[index].file); // Flush the file buffer
+              rewind(
+                  endpoints[index].file); // Reset file pointer to the beginning
+            } else {
+              req.response_code = 500; // Internal Server Error
+            }
+
+            pthread_mutex_unlock(&endpoints[index].mutex);
+          }
+        }
+      }
+      free(boundary);
     } else {
-      // Add other media types later
-      req.response_code = 415; // Unsupported Media Type
+      endpoints[index].is_binary = 0;
+      if (strcmp(req.content_type, "text/plain") == 0 ||
+          strcmp(req.content_type, "text/html") == 0 ||
+          strcmp(req.content_type, "text/css") == 0 ||
+          strcmp(req.content_type, "text/javascript") == 0 ||
+          strcmp(req.content_type, "application/json") == 0 ||
+          strcmp(req.content_type, "application/xml") == 0) {
+        req = text_based_handler(curr, req, index);
+      } else {
+        // Add other media types later
+        req.response_code = 415; // Unsupported Media Type
+      }
     }
   } else {
     req.response_code = 500; // Internal Server Error
@@ -222,7 +300,10 @@ char *get_endpoint_data(int index) {
     size_t data_length = strlen(endpoints[index].data);
     data_copy = malloc(data_length + 1);
     if (data_copy != NULL) {
-      strcpy(data_copy, endpoints[index].data);
+      memcpy(data_copy, endpoints[index].data, data_length);
+      data_copy[data_length] = '\0';
+    } else {
+      fprintf(stderr, "Failed to allocate memory for endpoint data copy\n");
     }
   }
 
@@ -294,7 +375,11 @@ char *serialize_response(HttpResponse *response, size_t *total_length) {
     current += sprintf(current, "%s\r\n", response->headers[i]);
   }
   current += sprintf(current, "\r\n");
-  memcpy(current, response->body, response->body_length);
+  if (response->body_length > 0) {
+    memcpy(current, response->body, response->body_length);
+    current += response->body_length;
+  }
+  *current = '\0';
 
   return serialized;
 }
