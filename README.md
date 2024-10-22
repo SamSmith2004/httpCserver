@@ -1,5 +1,6 @@
-### Simple C based Http Server
+### C based Http 1.1 Server
 Made for learning purposes.
+(On hold)
 
 #### Compile step:
 ```C
